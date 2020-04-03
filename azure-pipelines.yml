@@ -1,0 +1,70 @@
+# Node.js
+# Build a general Node.js project with npm.
+# Add steps that analyze code, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/javascript
+
+trigger:
+- master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildMTA
+    displayName: 'Build MTA Project'
+    steps:
+    - task: NodeTool@0
+      displayName: 'Install Node.js'
+      inputs:
+        versionSpec: '12.x'
+    - script: npm config set @sap:registry https://npm.sap.com
+      displayName: 'Add SAP NPM Repository'
+    - script: | 
+        wget https://github.com/SAP/cloud-mta-build-tool/releases/download/v1.0.12/cloud-mta-build-tool_1.0.12_Linux_amd64.tar.gz
+        tar xzf cloud-mta-build-tool_1.0.12_Linux_amd64.tar.gz
+      displayName: 'Install Cloud MTA Build Tool'
+    - script: ./mbt build --source $(Build.SourcesDirectory)
+      displayName: 'Build MTA Project with Cloud MTA Build Tool'
+    - task: CopyFiles@2
+      displayName: 'Copy MTA to Staging Directory'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/mta_archives'
+        Contents: '**'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish MTA for next Stage'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+- stage: Deploy
+  jobs:
+  - job: DeployToDEV
+    displayName: 'Deploy to DEV Space on CF'
+    steps:
+    - task: DownloadBuildArtifacts@0
+      displayName: 'Download MTA'
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'drop'
+        downloadPath: '$(System.ArtifactsDirectory)'
+    - script: |
+        MTAR="$(find $(System.ArtifactsDirectory)/drop -type f -name '*.mtar')"
+        echo "##vso[task.setvariable variable=mtaPath;isOutput=true]${MTAR}"
+      name: mtaPathExtraction
+      displayName: "Extract Path to MTA"
+    - script: sudo chmod -R 777 $(System.ArtifactsDirectory)/drop
+      displayName: Change Access Rights on MTA
+    - task: CloudFoundryCLIInstall@0
+      displayName: 'Install CF CLI'
+      inputs:
+        cfVersion: '6.50.0'
+    - script: cf install-plugin -f multiapps
+      displayName: 'Install MultiApps CF CLI Plugin'
+    - script: cf login -u "$(CF-USER)" -p "$(CF-PASSWORD)" -a "https://api.cf.eu10.hana.ondemand.com" -o "Novo_Nordisk" -s "DEV"
+      displayName: 'Login to CF'
+    - script: cf deploy $(mtaPathExtraction.mtaPath) -f
+      displayName: 'Deploy MTA to CF'
